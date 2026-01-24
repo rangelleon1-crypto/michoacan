@@ -1,15 +1,31 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS  # Importar CORS
 import requests
 from bs4 import BeautifulSoup
 import os
 
 app = Flask(__name__)
 
+# CONFIGURACIÓN DE CORS
+# Esto permite que solo tus dominios puedan consultar esta API
+CORS(app, resources={
+    r"/consultar": {
+        "origins": [
+            "https://michoacan.gob-mx.org",
+            "https://www.michoacan.gob-mx.org"
+        ]
+    }
+})
+
 @app.route('/consultar', methods=['GET', 'POST'])
 def api_consultar():
     # 1. Obtener parámetros
     if request.method == 'POST':
-        data = request.get_json() or {}
+        # Soporte para JSON o Form Data
+        if request.is_json:
+            data = request.get_json()
+        else:
+            data = request.form
         placa = data.get('placa', '').strip().upper()
         serie = data.get('serie', '').strip().upper()
     else:
@@ -20,7 +36,6 @@ def api_consultar():
         return jsonify({"ok": False, "error": "Faltan parámetros"}), 400
 
     # 2. Configuración del Proxy
-    # Formato: http://usuario:password@host:puerto
     proxy_url = "http://smart-acbga3s2e8o0_area-MX:VGp2kCrlWmUem0b0@proxy.smartproxy.net:3120"
     proxies = {
         "http": proxy_url,
@@ -35,10 +50,10 @@ def api_consultar():
     }
 
     session = requests.Session()
-    session.proxies.update(proxies) # Aplicar proxy a toda la sesión
+    session.proxies.update(proxies) 
 
     try:
-        # Paso A: Obtener sesión con IP de México
+        # Paso A: Obtener sesión
         session.get(url, headers=headers, timeout=15)
 
         # Paso B: Consulta de datos
@@ -54,8 +69,7 @@ def api_consultar():
         if response.status_code != 200:
             return jsonify({
                 "ok": False, 
-                "error": f"Error tras usar Proxy (Status {response.status_code})",
-                "proxy_status": "Revisar si el usuario/pass del proxy es correcto"
+                "error": f"Error del servidor externo (Status {response.status_code})"
             }), 502
 
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -78,14 +92,17 @@ def api_consultar():
         if not datos.get("NOMBRE") and not total:
             return jsonify({"ok": False, "error": "Datos no encontrados. Revisa placa/serie."}), 404
 
+        # Respuesta estructurada para tu HTML
         return jsonify({
             "ok": True,
             "data": {
                 "Nombre": datos.get("NOMBRE"),
+                "RFC": datos.get("RFC", "N/D"),
                 "Placa": datos.get("PLACA", placa),
                 "Serie": datos.get("SERIE", serie),
                 "Modelo": datos.get("MODELO"),
                 "Marca": datos.get("MARCA"),
+                "Tipo": datos.get("TIPO", "PARTICULAR"),
                 "Total": total
             }
         })
