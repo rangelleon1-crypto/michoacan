@@ -7,7 +7,7 @@ app = Flask(__name__)
 
 @app.route('/consultar', methods=['GET', 'POST'])
 def api_consultar():
-    # Obtener parámetros
+    # 1. Obtener parámetros
     if request.method == 'POST':
         data = request.get_json() or {}
         placa = data.get('placa', '').strip().upper()
@@ -19,34 +19,48 @@ def api_consultar():
     if not placa or not serie:
         return jsonify({"ok": False, "error": "Faltan parámetros"}), 400
 
-    # USAR UNA SESIÓN PARA MANTENER COOKIES
-    session = requests.Session()
+    # 2. Configuración del Proxy
+    # Formato: http://usuario:password@host:puerto
+    proxy_url = "http://smart-acbga3s2e8o0_area-MX:VGp2kCrlWmUem0b0@proxy.smartproxy.net:3120"
+    proxies = {
+        "http": proxy_url,
+        "https": proxy_url
+    }
+
     url = "https://refrendodigital.michoacan.gob.mx/"
-    
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "es-419,es;q=0.9",
         "Origin": "https://refrendodigital.michoacan.gob.mx",
         "Referer": url
     }
 
+    session = requests.Session()
+    session.proxies.update(proxies) # Aplicar proxy a toda la sesión
+
     try:
-        # 1. Primero visitamos la web para obtener la cookie de sesión inicial
+        # Paso A: Obtener sesión con IP de México
         session.get(url, headers=headers, timeout=15)
 
-        # 2. Enviamos los datos
-        payload = {"placa": placa, "serie": serie, "token": "", "mos": "1"}
+        # Paso B: Consulta de datos
+        payload = {
+            "placa": placa,
+            "serie": serie,
+            "token": "",
+            "mos": "1"
+        }
         
-        # Enviamos como data (form-encoded) tal cual tu script funcional
-        response = session.post(url, data=payload, headers=headers, timeout=20)
+        response = session.post(url, data=payload, headers=headers, timeout=25)
         
         if response.status_code != 200:
-            return jsonify({"ok": False, "error": f"Bloqueo del portal (Status {response.status_code})"}), 502
+            return jsonify({
+                "ok": False, 
+                "error": f"Error tras usar Proxy (Status {response.status_code})",
+                "proxy_status": "Revisar si el usuario/pass del proxy es correcto"
+            }), 502
 
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Verificación de datos
+        # Procesar tablas
         datos = {}
         for th in soup.find_all('th'):
             label = th.get_text(strip=True).replace(':', '').upper()
@@ -54,6 +68,7 @@ def api_consultar():
             if td:
                 datos[label] = td.get_text(strip=True)
 
+        # Procesar Total
         total = None
         for b in soup.find_all('b'):
             if "TOTAL A PAGAR" in b.get_text().upper():
@@ -61,21 +76,22 @@ def api_consultar():
                 break
 
         if not datos.get("NOMBRE") and not total:
-            return jsonify({"ok": False, "error": "No se encontraron datos en la respuesta"}), 404
+            return jsonify({"ok": False, "error": "Datos no encontrados. Revisa placa/serie."}), 404
 
         return jsonify({
-            "ok": True, 
+            "ok": True,
             "data": {
                 "Nombre": datos.get("NOMBRE"),
                 "Placa": datos.get("PLACA", placa),
                 "Serie": datos.get("SERIE", serie),
                 "Modelo": datos.get("MODELO"),
+                "Marca": datos.get("MARCA"),
                 "Total": total
             }
         })
 
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return jsonify({"ok": False, "error": f"Error de conexión: {str(e)}"}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
