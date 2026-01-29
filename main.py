@@ -7,10 +7,10 @@ from apify_client import ApifyClient
 
 app = FastAPI()
 
-# Configuración (Railway tomará estas de las variables de entorno)
-MY_TOKEN = os.getenv("APIFY_TOKEN", "tu_token_aqui")
+# Railway lee esto de la pestaña 'Variables'. Si no existe, usa tu token por defecto.
+MY_TOKEN = os.getenv("APIFY_TOKEN", "apify_api_OwqaDMqG4TeoOeuGd7DVU9flKaRchO04LOKJ")
 
-def obtener_datos(placa):
+def realizar_peticion(placa):
     url = "https://tenencia.edomex.gob.mx/TenenciaIndividual/tenencia/calculaTenencia"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -18,60 +18,82 @@ def obtener_datos(placa):
         "Origin": "https://tenencia.edomex.gob.mx",
     }
     try:
+        # Enviamos la placa como multipart/form-data
         response = requests.post(url, files={'placa': (None, placa)}, headers=headers, timeout=15)
         return response.json()
-    except:
-        return None
+    except Exception as e:
+        return {"error": f"Fallo de conexion: {str(e)}"}
 
-def disparar_apify(linea):
-    if not linea or linea == "N/A": return
-    nueve_digitos = linea[10:19]
-    client = ApifyClient(MY_TOKEN)
-    target_url = f"https://sfpya.edomexico.gob.mx/bancos/bbvabancomer.jsp?HdClaveOperacionServ={nueve_digitos}&HdOrigen=1&HdTipoPago=01&HdTipoEnvio=2&HdTipoImpuesto=3"
-    
-    run_input = {
-        "startUrls": [{"url": target_url}],
-        "waitUntil": ["domcontentloaded"],
-        "maxPagesPerCrawl": 1,
-        "pageFunction": "async function pageFunction(context) { return { status: 'ok' }; }"
+@app.get("/")
+def home():
+    """Ruta para verificar que el servidor esta vivo"""
+    return {
+        "status": "Online",
+        "mensaje": "Servidor de Tenencia Activo",
+        "instrucciones": "Usa /consultar/TU_PLACA para obtener datos"
     }
-    client.actor("apify/puppeteer-scraper").start(run_input=run_input)
 
 @app.get("/consultar/{placa}")
-def consultar_placa(placa: str):
-    # 1. Primera consulta
-    data_1 = obtener_datos(placa)
-    if not data_1:
-        return {"error": "No se pudo conectar con el Edomex"}
+def api_consultar(placa: str):
+    # Aseguramos que la placa este en mayusculas
+    placa = placa.upper()
     
+    # 1. Primera consulta: Obtener Linea de Captura
+    data_1 = realizar_peticion(placa)
+    
+    if not data_1 or "error" in data_1:
+        return {"error": "No se pudo obtener respuesta del Edomex"}
+
     linea = data_1.get("linea", "N/A")
-    
-    # 2. Si hay línea, disparar Apify y esperar
+
+    # 2. Proceso Apify: Solo si hay una linea de captura valida
     if linea and linea != "N/A":
-        disparar_apify(linea)
-        time.sleep(5) # Pausa para que el servidor registre
-        # 3. Consulta final
-        data_final = obtener_datos(placa)
+        client = ApifyClient(MY_TOKEN)
+        # Extraemos digitos 11 al 19 (indice 10 al 19)
+        nueve_digitos = linea[10:19]
+        target_url = f"https://sfpya.edomexico.gob.mx/bancos/bbvabancomer.jsp?HdClaveOperacionServ={nueve_digitos}&HdOrigen=1&HdTipoPago=01&HdTipoEnvio=2&HdTipoImpuesto=3"
+        
+        run_input = {
+            "startUrls": [{"url": target_url}],
+            "waitUntil": ["domcontentloaded"],
+            "maxPagesPerCrawl": 1,
+            "pageFunction": "async function pageFunction(context) { return { status: 'ok' }; }"
+        }
+        
+        # Disparo asincrono (sin esperar a que termine el navegador)
+        try:
+            client.actor("apify/puppeteer-scraper").start(run_input=run_input)
+        except:
+            pass # Si falla Apify, intentamos seguir
+        
+        # Espera de 5 segundos para que el sistema del gobierno procese el 'clic'
+        time.sleep(5)
+        
+        # 3. Consulta final para traer la ficha tecnica completa
+        data_final = realizar_peticion(placa)
     else:
         data_final = data_1
 
-    # Extraer info técnica para el reporte final limpio
-    info_vehiculo = {}
+    # 4. Extraer el objeto 'tenencia' que viene como String en el JSON original
+    info_interna = {}
     if "tenencia" in data_final:
         val = data_final["tenencia"]
-        info_vehiculo = json.loads(val) if isinstance(val, str) else val
+        try:
+            info_interna = json.loads(val) if isinstance(val, str) else val
+        except:
+            info_interna = {}
 
-    # Estructura de respuesta limpia
+    # 5. Respuesta JSON final con tus etiquetas personalizadas
     return {
-        "Placa": info_vehiculo.get("placa", placa),
-        "Modelo": info_vehiculo.get("modeloVehi", "N/A"),
-        "Vehículo": info_vehiculo.get("vehiculo", "N/A"),
-        "Clave Vehicular": info_vehiculo.get("claveVehicular", {}).get("claveVehicular") if isinstance(info_vehiculo.get("claveVehicular"), dict) else "N/A",
-        "Capacidad Carga": info_vehiculo.get("capacidadCarga", "N/A"),
-        "Fecha Factura": info_vehiculo.get("fechaFacturaFormat", "N/A"),
-        "Importe Factura": info_vehiculo.get("importeFacturaFormat", "N/A"),
-        "Cilindros": info_vehiculo.get("numCilindros", "N/A"),
-        "CC Moto": info_vehiculo.get("ccMoto", "N/A"),
-        "Linea Captura": data_final.get("linea", "N/A"),
-        "Importe Maximo": info_vehiculo.get("totalString", "N/A")
+        "Placa": info_interna.get("placa", placa),
+        "Modelo": info_interna.get("modeloVehi", "N/A"),
+        "Vehiculo": info_interna.get("vehiculo", "N/A"),
+        "Clave Vehicular": info_interna.get("claveVehicular", {}).get("claveVehicular") if isinstance(info_interna.get("claveVehicular"), dict) else "N/A",
+        "Capacidad Carga": info_interna.get("capacidadCarga", "N/A"),
+        "Fecha Factura": info_interna.get("fechaFacturaFormat", "N/A"),
+        "Importe Factura": info_interna.get("importeFacturaFormat", "N/A"),
+        "Cilindros": info_interna.get("numCilindros", "N/A"),
+        "CC Moto": info_interna.get("ccMoto", "N/A"),
+        "Linea_Captura": data_final.get("linea", "N/A"),
+        "Importe_Maximo": info_interna.get("totalString", "N/A")
     }
