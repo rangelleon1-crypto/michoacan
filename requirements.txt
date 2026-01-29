@@ -1,5 +1,4 @@
-flask
+fastapi
+uvicorn
 requests
-beautifulsoup4
-gunicorn
-flask-cors
+apify-client
